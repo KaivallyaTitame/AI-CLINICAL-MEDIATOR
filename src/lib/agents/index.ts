@@ -1,20 +1,19 @@
 import { randomUUID } from "crypto";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { openrouter } from "@/lib/openrouter";
 import { getTemplateBySlug } from "@/lib/templates";
 import type { AgentResponse, ConsensusReport, PatientCasePayload } from "@/lib/types";
 
-const rawGeminiApiKey = process.env.GEMINI_API_KEY?.trim();
-const geminiApiKey =
-  rawGeminiApiKey && !["demo_placeholder", "your_gemini_key", "your_gemini_api_key"].includes(rawGeminiApiKey)
-    ? rawGeminiApiKey
-    : null;
+const hasOpenrouterKey = Boolean(process.env.OPENROUTER_API_KEY?.trim());
 
-const MODEL = "gemini-2.0-flash";
+const MODEL_CHAIN: string[] = [
+  "google/gemma-3-12b-it:free",
+  "google/gemma-3-4b-it:free",
+  "mistralai/mistral-7b-instruct:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+];
+
 const EVIDENCE_GAP_SUFFIX =
   "If you do not have high-confidence evidence for a claim, explicitly state the evidence gap rather than speculating.";
-
-// Initialize Gemini client
-const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
 
 const AGENT_PROMPTS: Record<string, string> = {
   "AI Surgeon": `You are a board-certified cardiothoracic/oncologic surgeon. Analyze this patient case strictly from a surgical perspective. Cite relevant surgical guidelines (e.g., NCCN, ACC/AHA). State clearly whether surgical intervention is indicated, the timing, risks, and contraindications. ${EVIDENCE_GAP_SUFFIX}`,
@@ -64,190 +63,235 @@ function truncateText(value: string, maxLength = 600) {
 function summarizeAgentResponses(responses: AgentResponse[]) {
   return responses.map((response) => ({
     agent: response.agent,
-    confidence_score: response.confidence_score,
     recommendation: truncateText(response.recommendation, 700),
-    consensus_position: truncateText(response.consensus_position, 300),
+    confidence_score: response.confidence_score,
     key_evidence: response.key_evidence.slice(0, 3),
-    risks_identified: response.risks_identified.slice(0, 3),
     treatment_conflicts_flagged: response.treatment_conflicts_flagged.slice(0, 3),
-    ...(response.error ? { error: truncateText(response.error, 300) } : {}),
+    consensus_position: truncateText(response.consensus_position, 300),
   }));
 }
 
-function buildFallbackConsensusReport(casePayload: PatientCasePayload, responses: AgentResponse[]): ConsensusReport {
-  const fallbackOptions = responses.slice(0, 3).map((item, index) => ({
-    option: item.consensus_position,
-    score: Math.max(50, item.confidence_score - index * 5),
-    rationale: item.recommendation,
-    citations: item.key_evidence,
-  }));
-
-  return {
-    consensus_recommendation: `Consensus scaffold for ${casePayload.diagnosis}: reconcile specialist inputs and confirm with MDT leadership.`,
-    confidence_score: Math.round(
-      responses.reduce((sum, item) => sum + item.confidence_score, 0) / Math.max(responses.length, 1),
-    ),
-    evidence_strength: "Moderate",
-    treatment_options_ranked: fallbackOptions,
-    agent_agreement_summary: responses.map((item) => `${item.agent}: ${item.consensus_position}`).join(" "),
-    safety_alerts: responses.flatMap((item) => item.risks_identified).slice(0, 5),
-    dissenting_views: responses.flatMap((item) => item.treatment_conflicts_flagged).slice(0, 4),
-    time_sensitivity: "Standard",
-    suggested_next_steps: ["Review fallback output in MDT", "Confirm guideline citations", "Document final attending decision"],
-    unavailable_agents: responses.filter((item) => item.error).map((item) => item.agent),
-  };
-}
 
 function ensureConsensusShape(
   parsed: Partial<ConsensusReport>,
-  casePayload: PatientCasePayload,
-  responses: AgentResponse[],
 ): ConsensusReport {
-  const fallback = buildFallbackConsensusReport(casePayload, responses);
-
   return {
-    ...fallback,
-    ...parsed,
-    consensus_recommendation: parsed.consensus_recommendation ?? fallback.consensus_recommendation,
-    confidence_score: parsed.confidence_score ?? fallback.confidence_score,
-    evidence_strength: parsed.evidence_strength ?? fallback.evidence_strength,
-    treatment_options_ranked:
-      parsed.treatment_options_ranked && parsed.treatment_options_ranked.length > 0
-        ? parsed.treatment_options_ranked
-        : fallback.treatment_options_ranked,
-    agent_agreement_summary: parsed.agent_agreement_summary ?? fallback.agent_agreement_summary,
-    safety_alerts: parsed.safety_alerts ?? fallback.safety_alerts,
-    dissenting_views: parsed.dissenting_views ?? fallback.dissenting_views,
-    time_sensitivity: parsed.time_sensitivity ?? fallback.time_sensitivity,
-    suggested_next_steps: parsed.suggested_next_steps ?? fallback.suggested_next_steps,
-    unavailable_agents: parsed.unavailable_agents ?? fallback.unavailable_agents,
+    consensus_recommendation: parsed.consensus_recommendation ?? "No consensus reached",
+    confidence_score: parsed.confidence_score ?? 0,
+    evidence_strength: parsed.evidence_strength ?? "Low",
+    treatment_options_ranked: parsed.treatment_options_ranked ?? [],
+    agent_agreement_summary: parsed.agent_agreement_summary ?? "",
+    safety_alerts: parsed.safety_alerts ?? [],
+    dissenting_views: parsed.dissenting_views ?? [],
+    time_sensitivity: parsed.time_sensitivity ?? "Standard",
+    suggested_next_steps: parsed.suggested_next_steps ?? [],
+    unavailable_agents: parsed.unavailable_agents ?? [],
   };
 }
 
-async function invokeGeminiJson<T>({
-  system,
-  prompt,
-  maxOutputTokens,
+const RATE_LIMIT_STATUS = 429;
+
+
+function normalizeMessageContent(content: string | Array<{ text?: string }> | null | undefined) {
+  if (!content) {
+    return "";
+  }
+  if (typeof content === "string") {
+    return content;
+  }
+  return content.map((item) => item?.text ?? "").join("\n");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestJsonFromOpenRouter<T>({
+  model,
+  systemPrompt,
+  userContent,
+  maxTokens,
+  agentLabel,
 }: {
-  system: string;
-  prompt: string;
-  maxOutputTokens: number;
+  model: string;
+  systemPrompt: string;
+  userContent: string;
+  maxTokens: number;
+  agentLabel: string;
 }): Promise<T> {
-  if (!genAI) {
-    throw new Error("Gemini API key is missing. Set GEMINI_API_KEY in .env.local and restart the dev server.");
+  if (!hasOpenrouterKey) {
+    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
   }
 
-  try {
-    const model = genAI.getGenerativeModel({
-      model: MODEL,
-      systemInstruction: system,
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.8,
-        maxOutputTokens,
-        responseMimeType: "application/json",
-      },
-    });
+  const response = await openrouter.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+    response_format: { type: "json_object" },
+    max_tokens: maxTokens,
+  });
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-
-    if (!text) {
-      throw new Error("Gemini returned no text content.");
-    }
-
-    const normalizedText = stripCodeFences(text);
-
-    try {
-      return JSON.parse(normalizedText) as T;
-    } catch {
-      throw new Error(`Gemini returned invalid JSON: ${truncateText(normalizedText, 500)}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Gemini API call failed: ${message}`);
+  const messageContent = normalizeMessageContent(response.choices[0]?.message?.content ?? "");
+  if (!messageContent) {
+    throw new Error(`OpenRouter returned empty content for ${agentLabel}.`);
   }
+
+  const normalizedText = stripCodeFences(messageContent);
+  return JSON.parse(normalizedText) as T;
 }
 
-function fallbackAgentResponse(agent: string, casePayload: PatientCasePayload): AgentResponse {
-  return {
-    agent,
-    recommendation: `Fallback analysis for ${agent}: prioritize formal specialist review for ${casePayload.diagnosis}.`,
-    confidence_score: 55,
-    key_evidence: ["Evidence gap declared: live Gemini API unavailable or placeholder key configured; running in local scaffold mode."],
-    risks_identified: casePayload.comorbidities.slice(0, 3),
-    treatment_conflicts_flagged: ["Automated fallback mode should not be treated as clinical advice."],
-    consensus_position: `${agent} requests human validation before action.`,
-  };
-}
 
-async function invokeAgent(agent: string, casePayload: PatientCasePayload): Promise<AgentResponse> {
+async function invokeAgentSingle(agent: string, casePayload: PatientCasePayload, model: string): Promise<AgentResponse> {
+  if (!hasOpenrouterKey) {
+    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
+  }
+
   const system = AGENT_PROMPTS[agent] ?? `${agent}. ${EVIDENCE_GAP_SUFFIX}`;
   const prompt = `Return JSON only with keys: agent, recommendation, confidence_score, key_evidence, risks_identified, treatment_conflicts_flagged, consensus_position. Patient case:\n${buildCaseContext(casePayload)}`;
 
-  if (!geminiApiKey) {
-    return fallbackAgentResponse(agent, casePayload);
-  }
-
-  try {
-    return await invokeGeminiJson<AgentResponse>({
-      system,
-      prompt,
-      maxOutputTokens: 1400,
-    });
-  } catch (error) {
-    return {
-      ...fallbackAgentResponse(agent, casePayload),
-      error: String(error),
-    };
-  }
+  return await requestJsonFromOpenRouter<AgentResponse>({
+    model,
+    systemPrompt: system,
+    userContent: prompt,
+    maxTokens: 2000,
+    agentLabel: agent,
+  });
 }
 
-async function invokeModerator(casePayload: PatientCasePayload, responses: AgentResponse[]): Promise<ConsensusReport> {
-  if (!geminiApiKey) {
-    return buildFallbackConsensusReport(casePayload, responses);
+async function invokeAgentWithFallback(agent: string, casePayload: PatientCasePayload): Promise<AgentResponse> {
+  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    const model = MODEL_CHAIN[i];
+    try {
+      console.log(`[${agent}] Trying model ${i + 1}/${MODEL_CHAIN.length}: ${model}`);
+      return await invokeAgentSingle(agent, casePayload, model);
+    } catch (error: unknown) {
+      const statusCode = (error as { status?: number })?.status;
+      const message = error instanceof Error ? error.message : String(error);
+      const is404 = statusCode === 404 || message.includes("404") || message.includes("No endpoints");
+      const is429 = statusCode === RATE_LIMIT_STATUS || message.includes("429");
+
+      if (is404) {
+        console.log(`[${agent}] 404 on ${model}, skipping to next model...`);
+        continue;
+      }
+      if (is429 && i < MODEL_CHAIN.length - 1) {
+        console.log(`[${agent}] 429 on ${model}, waiting 20s then trying next model...`);
+        await delay(20000);
+        continue;
+      }
+      if (i === MODEL_CHAIN.length - 1) {
+        throw new Error(`[${agent}] All ${MODEL_CHAIN.length} models exhausted. Last error: ${message}`);
+      }
+      throw error;
+    }
+  }
+  throw new Error(`[${agent}] All models in chain exhausted`);
+}
+
+async function invokeModerator(
+  casePayload: PatientCasePayload,
+  responses: AgentResponse[],
+  model: string,
+): Promise<ConsensusReport> {
+  if (!hasOpenrouterKey) {
+    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
   }
 
   const summarizedResponses = summarizeAgentResponses(responses);
 
-  try {
-    const parsed = await invokeGeminiJson<Partial<ConsensusReport>>({
-      system: MODERATOR_PROMPT,
-      prompt: `Return JSON only with keys consensus_recommendation, confidence_score, evidence_strength, treatment_options_ranked, safety_alerts, dissenting_views, time_sensitivity, suggested_next_steps, agent_agreement_summary. Each treatment_options_ranked entry must include option, score, rationale, citations. Respond with valid JSON only.\n\nPatient case:\n${buildCaseContext(casePayload)}\n\nAgent responses (JSON array):\n${JSON.stringify(summarizedResponses, null, 2)}`,
-      maxOutputTokens: 1800,
-    });
-    return ensureConsensusShape(parsed, casePayload, responses);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.toLowerCase().includes("api key") || message.toLowerCase().includes("permission denied")) {
-      throw new Error("Moderator call failed: Gemini API key is invalid. Update GEMINI_API_KEY in .env.local with a real key and restart the dev server.");
-    }
-    console.error("Moderator invocation failed", error);
-    throw new Error(`Moderator call failed: ${message}`);
-  }
+  const parsed = await requestJsonFromOpenRouter<Partial<ConsensusReport>>({
+    model,
+    systemPrompt: MODERATOR_PROMPT,
+    userContent: `Return JSON only with keys consensus_recommendation, confidence_score, evidence_strength, treatment_options_ranked, safety_alerts, dissenting_views, time_sensitivity, suggested_next_steps, agent_agreement_summary. Each treatment_options_ranked entry must include option, score, rationale, citations. Respond with valid JSON only.\n\nPatient case:\n${buildCaseContext(casePayload)}\n\nAgent responses (JSON array):\n${JSON.stringify(summarizedResponses, null, 2)}`,
+    maxTokens: 3000,
+    agentLabel: "Moderator",
+  });
+  return ensureConsensusShape(parsed);
 }
 
 export async function runDebate(casePayload: PatientCasePayload, onEvent?: (event: Record<string, unknown>) => void) {
   const agents = resolveAgents(casePayload);
   onEvent?.({ type: "start", agents });
 
-  const settled = await Promise.all(
-    agents.map(async (agent) => {
-      onEvent?.({ type: "agent_started", agent, id: randomUUID() });
-      const result = await invokeAgent(agent, casePayload);
-      onEvent?.({ type: "agent_completed", agent, result });
-      return result;
-    }),
-  );
+  console.log("[OpenRouter] Model chain:", MODEL_CHAIN);
 
+  const total = agents.length;
+  const STAGGER_MS = 2000;
+
+  const agentPromises = agents.map((agent, index) => {
+    const position = index + 1;
+    const eventId = randomUUID();
+    return (async () => {
+      await delay(index * STAGGER_MS);
+      onEvent?.({ type: "agent_started", agent, id: eventId, position, total });
+      try {
+        const result = await invokeAgentWithFallback(agent, casePayload);
+        onEvent?.({ type: "agent_completed", agent, result, position, total });
+        console.log(`[${agent}] completed (${position}/${total})`);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[${agent}] all models failed:`, message);
+        onEvent?.({
+          type: "agent_failed",
+          agent,
+          error: message,
+          position,
+          total,
+        });
+        return null;
+      }
+    })();
+  });
+
+  const results = await Promise.all(agentPromises);
+  const agentResponses = results.filter((r): r is AgentResponse => r !== null);
+
+  console.log(`${agentResponses.length}/${total} agents succeeded. Starting Moderator...`);
   onEvent?.({ type: "moderator_started" });
-  const consensus = await invokeModerator(casePayload, settled);
+
+  let consensus: ConsensusReport | null = null;
+
+  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    const model = MODEL_CHAIN[i];
+    try {
+      console.log(`[Moderator] Trying model ${i + 1}/${MODEL_CHAIN.length}: ${model}`);
+      consensus = await invokeModerator(casePayload, agentResponses, model);
+      break;
+    } catch (error: unknown) {
+      const statusCode = (error as { status?: number })?.status;
+      const message = error instanceof Error ? error.message : String(error);
+      const is404 = statusCode === 404 || message.includes("404") || message.includes("No endpoints");
+      const is429 = statusCode === RATE_LIMIT_STATUS || message.includes("429");
+
+      if (is404) {
+        console.log(`[Moderator] 404 on ${model}, skipping...`);
+        continue;
+      }
+      if (is429 && i < MODEL_CHAIN.length - 1) {
+        console.log(`[Moderator] 429 on ${model}, waiting 20s...`);
+        await delay(20000);
+        continue;
+      }
+      if (i === MODEL_CHAIN.length - 1) {
+        console.error("[Moderator] All models exhausted.", message);
+        throw error;
+      }
+      throw error;
+    }
+  }
+
+  if (!consensus) {
+    throw new Error("Moderator failed to produce consensus — all models exhausted.");
+  }
+
   onEvent?.({ type: "moderator_completed", consensus });
 
   return {
     agents,
-    agentResponses: settled,
+    agentResponses,
     consensus,
   };
 }

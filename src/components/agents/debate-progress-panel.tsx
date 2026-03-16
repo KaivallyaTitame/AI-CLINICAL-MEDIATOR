@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 type EventItem =
-  | { type: "agent_started"; agent: string; timestamp: string }
-  | { type: "agent_completed"; agent: string; result: AgentResponse; timestamp: string }
+  | { type: "agent_started"; agent: string; timestamp: string; position?: number; total?: number }
+  | { type: "agent_completed"; agent: string; result: AgentResponse; timestamp: string; position?: number; total?: number }
+  | { type: "agent_failed"; agent: string; error: string; timestamp: string; position?: number; total?: number }
   | { type: "moderator_started"; timestamp: string }
   | { type: "moderator_completed"; consensus: ConsensusReport; timestamp: string }
   | { type: "start"; agents: string[]; timestamp: string }
@@ -41,6 +42,14 @@ export function DebateProgressPanel({
   const [events, setEvents] = useState<EventItem[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string>("");
+
+  const formatAgentProgress = useCallback((agent: string, position?: number, total?: number) => {
+    if (!position || !total) {
+      return `Running ${agent}… please wait`;
+    }
+    return `Running ${agent} (${position}/${total})… please wait`;
+  }, []);
 
   const canAnalyze = status === "pending";
 
@@ -48,6 +57,7 @@ export function DebateProgressPanel({
     setRunning(true);
     setEvents([]);
     setError(null);
+    setProgressMessage("Initializing multidisciplinary agents…");
 
     try {
       const response = await fetch(`/api/cases/${caseId}/analyze`, { method: "POST" });
@@ -81,10 +91,28 @@ export function DebateProgressPanel({
           try {
             const event = JSON.parse(json) as EventItem;
             setEvents((prev) => [...prev, event]);
+            if (event.type === "agent_started") {
+              setProgressMessage(formatAgentProgress(event.agent, event.position, event.total));
+            }
+            if (event.type === "agent_completed") {
+              setProgressMessage(
+                event.position && event.total
+                  ? `${event.agent} completed (${event.position}/${event.total}). Preparing next agent…`
+                  : `${event.agent} completed. Preparing next agent…`,
+              );
+            }
+            if (event.type === "agent_failed") {
+              setProgressMessage(`Agent ${event.agent} failed: ${event.error}`);
+            }
+            if (event.type === "moderator_started") {
+              setProgressMessage("Synthesizing consensus… almost done");
+            }
             if (event.type === "error") {
               setError(event.error || "Moderator error");
+              setProgressMessage("Analysis interrupted due to an error.");
             }
             if (event.type === "complete") {
+              setProgressMessage("Consensus ready! Refreshing latest data…");
               router.refresh();
             }
           } catch (parseError) {
@@ -94,10 +122,11 @@ export function DebateProgressPanel({
       }
     } catch (err) {
       setError((err as Error).message);
+      setProgressMessage("Analysis interrupted due to an error.");
     } finally {
       setRunning(false);
     }
-  }, [caseId, router]);
+  }, [caseId, router, formatAgentProgress]);
 
   const latestAgents = useMemo(() => {
     const map = new Map<string, { status: string; timestamp: string }>();
@@ -120,10 +149,13 @@ export function DebateProgressPanel({
           <p className="text-sm text-slate-500">Run parallel agent analysis and stream progress in real-time.</p>
         </div>
         <Button onClick={handleAnalyze} disabled={!canAnalyze || running}>
-          {running ? "Analyzing…" : "Start Debate"}
+          {running
+            ? "Analysis in progress… this may take 3-5 minutes due to free tier rate limits. Please do not close this page."
+            : "Start Debate"}
         </Button>
       </div>
 
+      {progressMessage ? <p className="text-sm text-slate-600">{progressMessage}</p> : null}
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
       {events.length > 0 ? (
@@ -132,8 +164,14 @@ export function DebateProgressPanel({
             <div key={index} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
               <span className="font-semibold text-slate-900">{event.type.replace("_", " ")}</span>
               <span className="mx-2 text-xs text-slate-500">{formatTimestamp(event.timestamp)}</span>
-              {"agent" in event && event.agent ? <span> — {event.agent}</span> : null}
+              {"agent" in event && event.agent ? (
+                <span>
+                  {` — ${event.agent}`}
+                  {"position" in event && event.position && event.total ? ` (${event.position}/${event.total})` : ""}
+                </span>
+              ) : null}
               {event.type === "error" && event.error ? <span className="ml-2 text-red-600"> — {event.error}</span> : null}
+              {event.type === "agent_failed" && event.error ? <span className="ml-2 text-red-600"> — {event.error}</span> : null}
             </div>
           ))}
         </div>

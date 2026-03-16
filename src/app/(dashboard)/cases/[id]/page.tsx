@@ -11,6 +11,10 @@ import { Badge } from "@/components/ui/badge";
 
 export const dynamic = "force-dynamic";
 
+const toArray = (val: any): string[] =>
+  Array.isArray(val) ? val :
+  typeof val === "string" && val.length ? [val] : [];
+
 async function getCase(id: string) {
   const patientCase = await prisma.patientCase.findUnique({ where: { id } });
   if (!patientCase) {
@@ -25,7 +29,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
 
   const agentResponses = (patientCase.agentResponses as AgentResponse[] | null) ?? null;
   const consensus = (patientCase.consensusReport as ConsensusReport | null) ?? null;
-  const safetyAlerts = consensus?.safety_alerts ?? [];
+  const safetyAlerts = toArray(consensus?.safety_alerts);
   const treatmentOptions = consensus?.treatment_options_ranked ?? [];
 
   return (
@@ -147,9 +151,9 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
                       <Badge className={`${scoreTone(option.score)} border`}>{option.score}/100</Badge>
                     </div>
                     <p className="mt-2 text-sm text-slate-600">{option.rationale}</p>
-                    {option.citations.length ? (
+                    {toArray(option.citations).length ? (
                       <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-500">
-                        Citations: {option.citations.join(", ")}
+                        Citations: {toArray(option.citations).join(", ")}
                       </p>
                     ) : null}
                   </div>
@@ -162,11 +166,11 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
                 <p className="text-sm font-semibold text-slate-900">Agent agreement</p>
                 <p className="text-sm text-slate-600">{consensus.agent_agreement_summary}</p>
               </div>
-              {consensus.dissenting_views.length ? (
+              {toArray(consensus.dissenting_views).length ? (
                 <div>
                   <p className="text-sm font-semibold text-slate-900">Dissenting views</p>
                   <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-slate-600">
-                    {consensus.dissenting_views.map((item) => (
+                    {toArray(consensus.dissenting_views).map((item) => (
                       <li key={item}>{item}</li>
                     ))}
                   </ul>
@@ -175,7 +179,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
               <div>
                 <p className="text-sm font-semibold text-slate-900">Next steps</p>
                 <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-slate-600">
-                  {consensus.suggested_next_steps.map((step) => (
+                  {toArray(consensus.suggested_next_steps).map((step) => (
                     <li key={step}>{step}</li>
                   ))}
                 </ul>
@@ -203,31 +207,31 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
                   )}
                 </div>
                 <p className="text-sm text-slate-700">{response.recommendation}</p>
-                {response.key_evidence.length ? (
+                {toArray(response.key_evidence).length ? (
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Key evidence</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
-                      {response.key_evidence.map((item) => (
+                      {toArray(response.key_evidence).map((item) => (
                         <li key={item}>{item}</li>
                       ))}
                     </ul>
                   </div>
                 ) : null}
-                {response.risks_identified.length ? (
+                {toArray(response.risks_identified).length ? (
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Risks</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
-                      {response.risks_identified.map((item) => (
+                      {toArray(response.risks_identified).map((item) => (
                         <li key={item}>{item}</li>
                       ))}
                     </ul>
                   </div>
                 ) : null}
-                {response.treatment_conflicts_flagged.length ? (
+                {toArray(response.treatment_conflicts_flagged).length ? (
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Conflicts flagged</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
-                      {response.treatment_conflicts_flagged.map((item) => (
+                      {toArray(response.treatment_conflicts_flagged).map((item) => (
                         <li key={item}>{item}</li>
                       ))}
                     </ul>
