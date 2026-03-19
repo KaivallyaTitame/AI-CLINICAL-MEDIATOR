@@ -19,11 +19,12 @@ model Doctor {
 
 model PatientCase {
   id              String   @id @default(uuid())
-  patientId       String
+  patientId       String   @unique
   age             Int
   sex             String
   weight          Float?
   diagnosis       String
+  icd10Code       String?
   caseType        String
   comorbidities   String[]
   medications     String[]

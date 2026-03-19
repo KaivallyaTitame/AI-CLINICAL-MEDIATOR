@@ -41,11 +41,12 @@ export type ConsensusReport = {
 };
 
 export type PatientCasePayload = {
-  patientId?: string;
+  patientId: string;
   age: number;
   sex: string;
   weight?: number;
   diagnosis: string;
+  icd10Code?: string;
   caseType: string;
   comorbidities: string[];
   medications: string[];

@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
@@ -53,11 +52,12 @@ export async function POST(request: Request) {
 
     const item = await prisma.patientCase.create({
       data: {
-        patientId: parsed.data.patientId || randomUUID(),
+        patientId: parsed.data.patientId,
         age: parsed.data.age,
         sex: parsed.data.sex,
         weight: parsed.data.weight,
         diagnosis: parsed.data.diagnosis,
+        icd10Code: parsed.data.icd10Code,
         caseType: parsed.data.caseType,
         comorbidities: parsed.data.comorbidities,
         medications: parsed.data.medications,

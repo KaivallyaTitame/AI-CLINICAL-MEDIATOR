@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { CaseStatusBadge } from "@/components/case-status-badge";
+import { DuplicateCaseButton } from "@/components/duplicate-case-button";
 import { formatDate } from "@/lib/utils";
 import type { CaseStatus } from "@/lib/types";
 
@@ -62,6 +63,7 @@ export default async function DashboardPage() {
               <div className="flex-1 text-sm text-slate-700">{item.diagnosis}</div>
               <CaseStatusBadge status={item.status as CaseStatus} />
               <div className="text-sm text-slate-500">{formatDate(item.createdAt)}</div>
+              <DuplicateCaseButton caseId={item.id} />
             </Link>
           ))}
         </div>
