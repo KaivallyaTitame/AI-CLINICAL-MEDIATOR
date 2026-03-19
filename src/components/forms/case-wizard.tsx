@@ -78,6 +78,10 @@ export function CaseWizard() {
   const [shakeFields, setShakeFields] = useState(false);
   const [stepsCompleted, setStepsCompleted] = useState<boolean[]>([false, false, false]);
 
+  // Speech-to-text state
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
   // ICD-10 state
   const [icd10Query, setIcd10Query] = useState("");
   const [icd10Results, setIcd10Results] = useState<Array<{ code: string; description: string }>>([]);
@@ -140,6 +144,48 @@ export function CaseWizard() {
   });
 
   const watchedValues = form.watch();
+
+  // Speech-to-text toggle (must be after form declaration)
+  const toggleSpeechRecognition = useCallback(() => {
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setToast("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.continuous = true;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = Array.from(event.results)
+        .map((r) => r[0].transcript)
+        .join(" ");
+      const current = form.getValues("diagnosis") || "";
+      const separator = current && !current.endsWith(" ") ? " " : "";
+      form.setValue("diagnosis", current + separator + transcript.trim(), { shouldDirty: true, shouldValidate: true });
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setToast("Microphone error — check browser permissions.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  }, [isListening, form]);
 
   // --- Toast helper ---
   const showToast = useCallback((msg: string) => {
@@ -782,11 +828,31 @@ export function CaseWizard() {
                 <Input type="number" step="0.1" {...form.register("weight", { valueAsNumber: true })} />
               </div>
               <div className="md:col-span-2">
-                <label className="text-sm font-medium text-slate-700">Primary diagnosis <span className="text-rose-500">*</span></label>
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-700">Primary diagnosis <span className="text-rose-500">*</span></label>
+                  <button
+                    type="button"
+                    onClick={toggleSpeechRecognition}
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                      isListening
+                        ? "bg-rose-100 text-rose-700 animate-pulse"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                    title={isListening ? "Stop recording" : "Dictate diagnosis"}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" x2="12" y1="19" y2="22" />
+                    </svg>
+                    {isListening ? "Listening…" : "Dictate"}
+                  </button>
+                </div>
                 <Textarea
                   rows={3}
                   {...form.register("diagnosis")}
-                  className={form.formState.errors.diagnosis ? "border-rose-400 ring-1 ring-rose-300" : ""}
+                  placeholder={isListening ? "Listening — speak now…" : "Describe the primary diagnosis"}
+                  className={`mt-1 ${form.formState.errors.diagnosis ? "border-rose-400 ring-1 ring-rose-300" : ""} ${isListening ? "ring-2 ring-rose-300 border-rose-300" : ""}`}
                 />
                 {form.formState.errors.diagnosis && (
                   <p className="mt-1 text-xs text-rose-600">{form.formState.errors.diagnosis.message}</p>
