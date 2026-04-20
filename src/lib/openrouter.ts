@@ -1,13 +1,13 @@
 import OpenAI from "openai";
 
-export const openrouter = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-  defaultHeaders: {
-    "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-    "X-Title": "AI Clinical Mediator",
-  },
+// ── Active provider: OpenAI ──────────────────────────────────────────
+export const openai = new OpenAI({
+  baseURL: "https://api.openai.com/v1",
+  apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Re-export under the old name so agents/index.ts keeps working
+export const openrouter = openai;
 
 export interface OpenRouterOptions {
   model: string;
@@ -17,9 +17,9 @@ export interface OpenRouterOptions {
   temperature?: number;
 }
 
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MAX_TOKENS = 2000;
-const DEFAULT_TEMPERATURE = 0.1;
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_TEMPERATURE = 0.3;
 const RETRY_COUNT = 2;
 const RETRY_DELAY_MS = 1000;
 
@@ -41,9 +41,9 @@ export async function callOpenRouter(options: OpenRouterOptions): Promise<string
     temperature = DEFAULT_TEMPERATURE,
   } = options;
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    console.error("[callOpenRouter] OPENROUTER_API_KEY is not set");
+    console.error("[callOpenAI] OPENAI_API_KEY is not set");
     return FALLBACK_RESPONSE;
   }
 
@@ -59,15 +59,13 @@ export async function callOpenRouter(options: OpenRouterOptions): Promise<string
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
-    "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-    "X-Title": "AI Clinical Mediator",
     "Content-Type": "application/json",
   };
 
   for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
     const start = Date.now();
     try {
-      const response = await fetch(OPENROUTER_API_URL, {
+      const response = await fetch(OPENAI_API_URL, {
         method: "POST",
         headers,
         body,
@@ -75,12 +73,12 @@ export async function callOpenRouter(options: OpenRouterOptions): Promise<string
 
       const latency = Date.now() - start;
       if (process.env.NODE_ENV === "development") {
-        console.log(`[callOpenRouter] model=${model} latency=${latency}ms status=${response.status} attempt=${attempt + 1}`);
+        console.log(`[callOpenAI] model=${model} latency=${latency}ms status=${response.status} attempt=${attempt + 1}`);
       }
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "unknown error");
-        console.error(`[callOpenRouter] HTTP ${response.status}: ${errorText}`);
+        console.error(`[callOpenAI] HTTP ${response.status}: ${errorText}`);
         if (attempt < RETRY_COUNT) {
           await delay(RETRY_DELAY_MS);
           continue;
@@ -91,13 +89,13 @@ export async function callOpenRouter(options: OpenRouterOptions): Promise<string
       const data = await response.json();
       const content = data?.choices?.[0]?.message?.content;
       if (!content) {
-        console.error("[callOpenRouter] Empty content in response");
+        console.error("[callOpenAI] Empty content in response");
         return FALLBACK_RESPONSE;
       }
       return typeof content === "string" ? content : JSON.stringify(content);
     } catch (error) {
       const latency = Date.now() - start;
-      console.error(`[callOpenRouter] Network error attempt=${attempt + 1} latency=${latency}ms:`, error);
+      console.error(`[callOpenAI] Network error attempt=${attempt + 1} latency=${latency}ms:`, error);
       if (attempt < RETRY_COUNT) {
         await delay(RETRY_DELAY_MS);
         continue;
@@ -110,6 +108,21 @@ export async function callOpenRouter(options: OpenRouterOptions): Promise<string
 }
 
 export const FREE_MODELS = {
-  TEXT: "nous/hermes-3-405b-instruct",
-  VISION: "google/gemma-3-12b-it",
+  TEXT: "gpt-4o-mini",
+  VISION: "gpt-4o-mini",
 } as const;
+
+// ── Commented-out OpenRouter config (preserved for future use) ────────
+// export const openrouter = new OpenAI({
+//   baseURL: "https://openrouter.ai/api/v1",
+//   apiKey: process.env.OPENROUTER_API_KEY,
+//   defaultHeaders: {
+//     "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+//     "X-Title": "AI Clinical Mediator",
+//   },
+// });
+// const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+// export const FREE_MODELS = {
+//   TEXT: "nous/hermes-3-405b-instruct",
+//   VISION: "google/gemma-3-12b-it",
+// } as const;

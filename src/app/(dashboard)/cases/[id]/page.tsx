@@ -11,9 +11,21 @@ import { Badge } from "@/components/ui/badge";
 
 export const dynamic = "force-dynamic";
 
-const toArray = (val: any): string[] =>
-  Array.isArray(val) ? val :
-  typeof val === "string" && val.length ? [val] : [];
+const toArray = (val: unknown): string[] => {
+  if (Array.isArray(val)) return val.map(toStr);
+  if (typeof val === "string" && val.length) return [val];
+  return [];
+};
+
+function toStr(val: unknown): string {
+  if (typeof val === "string") return val;
+  if (val == null) return "";
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    return (obj.level ?? obj.name ?? obj.description ?? obj.option ?? obj.summary ?? JSON.stringify(val)) as string;
+  }
+  return String(val);
+}
 
 async function getCase(id: string) {
   const patientCase = await prisma.patientCase.findUnique({ where: { id } });
@@ -106,7 +118,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
           <div className="flex flex-wrap items-center gap-4">
             <Card className="flex-1 space-y-2 border-emerald-200 p-6">
               <p className="text-sm font-semibold text-emerald-700">Consensus recommendation</p>
-              <p className="text-2xl font-semibold text-slate-900">{consensus.consensus_recommendation}</p>
+              <p className="text-2xl font-semibold text-slate-900">{toStr(consensus.consensus_recommendation)}</p>
               <Badge className={`${scoreTone(consensus.confidence_score)} border`}>
                 Confidence {consensus.confidence_score}/100
               </Badge>
@@ -115,17 +127,17 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
               <p className="text-sm font-semibold text-slate-900">Evidence strength</p>
               <Badge
                 className={
-                  consensus.evidence_strength === "High"
+                  toStr(consensus.evidence_strength).includes("High")
                     ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                    : consensus.evidence_strength === "Moderate"
+                    : toStr(consensus.evidence_strength).includes("Moderate")
                       ? "border-amber-200 bg-amber-50 text-amber-700"
                       : "border-rose-200 bg-rose-50 text-rose-700"
                 }
               >
-                {consensus.evidence_strength}
+                {toStr(consensus.evidence_strength)}
               </Badge>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Time sensitivity</p>
-              <p className="text-sm text-slate-700">{consensus.time_sensitivity}</p>
+              <p className="text-sm text-slate-700">{toStr(consensus.time_sensitivity)}</p>
             </Card>
           </div>
 
@@ -164,7 +176,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
             <Card className="space-y-4 p-6">
               <div>
                 <p className="text-sm font-semibold text-slate-900">Agent agreement</p>
-                <p className="text-sm text-slate-600">{consensus.agent_agreement_summary}</p>
+                <p className="text-sm text-slate-600">{toStr(consensus.agent_agreement_summary)}</p>
               </div>
               {toArray(consensus.dissenting_views).length ? (
                 <div>
@@ -206,7 +218,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
                     <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">Complete</Badge>
                   )}
                 </div>
-                <p className="text-sm text-slate-700">{response.recommendation}</p>
+                <p className="text-sm text-slate-700">{toStr(response.recommendation)}</p>
                 {toArray(response.key_evidence).length ? (
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Key evidence</p>

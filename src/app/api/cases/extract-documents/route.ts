@@ -56,9 +56,20 @@ function stripCodeFences(text: string): string {
 }
 
 async function extractTextFromPdf(buffer: Buffer): Promise<string> {
-  const { extractText } = await import("unpdf");
-  const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
-  return text;
+  try {
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(buffer), {
+      standardFontDataUrl: "https://unpkg.com/pdfjs-dist@latest/standard_fonts/",
+    });
+    const { text } = await extractText(pdf, { mergePages: true });
+    if (!text || !text.trim()) {
+      console.warn("[extractTextFromPdf] PDF parsed but no text extracted — may be scanned/image PDF");
+    }
+    return text;
+  } catch (err) {
+    console.error("[extractTextFromPdf] unpdf failed:", err);
+    throw new Error(`PDF text extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function extractTextFromDocx(buffer: Buffer): Promise<string> {
@@ -143,6 +154,7 @@ export async function POST(request: Request) {
       rawResponse = await callOpenRouter({
         model: FREE_MODELS.TEXT,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
+        maxTokens: 4096,
         messages: [
           {
             role: "user",
@@ -163,6 +175,7 @@ export async function POST(request: Request) {
       rawResponse = await callOpenRouter({
         model: FREE_MODELS.VISION,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
+        maxTokens: 4096,
         messages: [{ role: "user", content: imageContent }],
       });
     } else {
@@ -178,6 +191,7 @@ export async function POST(request: Request) {
       rawResponse = await callOpenRouter({
         model: FREE_MODELS.VISION,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
+        maxTokens: 4096,
         messages: [{ role: "user", content: mixedContent }],
       });
     }
@@ -188,16 +202,22 @@ export async function POST(request: Request) {
     try {
       parsed = JSON.parse(stripCodeFences(rawResponse));
     } catch {
-      const fallbackCheck = JSON.parse(rawResponse).fallback;
-      if (fallbackCheck) {
-        return NextResponse.json({
-          success: false,
-          fallback: true,
-          data: null,
-          filesProcessed: files.length,
-          processingTimeMs,
-          error: "Extraction unavailable — please enter data manually",
-        });
+      // Check if the raw response is a fallback object
+      try {
+        const fallbackCheck = JSON.parse(rawResponse);
+        if (fallbackCheck?.fallback) {
+          return NextResponse.json({
+            success: false,
+            fallback: true,
+            data: null,
+            filesProcessed: files.length,
+            processingTimeMs,
+            error: "Extraction unavailable — please enter data manually",
+          });
+        }
+      } catch {
+        // rawResponse is not valid JSON at all (likely truncated)
+        console.error("[extract-documents] Truncated or invalid AI response, length:", rawResponse.length);
       }
       return NextResponse.json({
         success: false,
@@ -205,7 +225,7 @@ export async function POST(request: Request) {
         data: null,
         filesProcessed: files.length,
         processingTimeMs,
-        error: "Extraction failed — could not parse AI response",
+        error: "Extraction failed — AI response was truncated or invalid",
       });
     }
 

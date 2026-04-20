@@ -3,14 +3,20 @@ import { openrouter } from "@/lib/openrouter";
 import { getTemplateBySlug } from "@/lib/templates";
 import type { AgentResponse, ConsensusReport, PatientCasePayload } from "@/lib/types";
 
-const hasOpenrouterKey = Boolean(process.env.OPENROUTER_API_KEY?.trim());
+const hasApiKey = Boolean(process.env.OPENAI_API_KEY?.trim());
 
+// ── Active: OpenAI models ────────────────────────────────────────────
 const MODEL_CHAIN: string[] = [
-  "google/gemma-3-12b-it:free",
-  "google/gemma-3-4b-it:free",
-  "mistralai/mistral-7b-instruct:free",
-  "meta-llama/llama-3.1-8b-instruct:free",
+  "gpt-4o-mini",
 ];
+
+// ── Commented-out OpenRouter model chain (preserved for future use) ──
+// const MODEL_CHAIN: string[] = [
+//   "google/gemma-3-12b-it:free",
+//   "google/gemma-3-4b-it:free",
+//   "mistralai/mistral-7b-instruct:free",
+//   "meta-llama/llama-3.1-8b-instruct:free",
+// ];
 
 const EVIDENCE_GAP_SUFFIX =
   "If you do not have high-confidence evidence for a claim, explicitly state the evidence gap rather than speculating.";
@@ -60,14 +66,20 @@ function truncateText(value: string, maxLength = 600) {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 }
 
+function toArray(val: unknown): string[] {
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string" && val) return [val];
+  return [];
+}
+
 function summarizeAgentResponses(responses: AgentResponse[]) {
   return responses.map((response) => ({
     agent: response.agent,
-    recommendation: truncateText(response.recommendation, 700),
-    confidence_score: response.confidence_score,
-    key_evidence: response.key_evidence.slice(0, 3),
-    treatment_conflicts_flagged: response.treatment_conflicts_flagged.slice(0, 3),
-    consensus_position: truncateText(response.consensus_position, 300),
+    recommendation: truncateText(response.recommendation ?? "", 700),
+    confidence_score: response.confidence_score ?? 0,
+    key_evidence: toArray(response.key_evidence).slice(0, 3),
+    treatment_conflicts_flagged: toArray(response.treatment_conflicts_flagged).slice(0, 3),
+    consensus_position: truncateText(response.consensus_position ?? "", 300),
   }));
 }
 
@@ -119,8 +131,8 @@ async function requestJsonFromOpenRouter<T>({
   maxTokens: number;
   agentLabel: string;
 }): Promise<T> {
-  if (!hasOpenrouterKey) {
-    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
+  if (!hasApiKey) {
+    throw new Error("OpenAI API key is missing. Set OPENAI_API_KEY in .env.local and restart the dev server.");
   }
 
   const response = await openrouter.chat.completions.create({
@@ -135,7 +147,7 @@ async function requestJsonFromOpenRouter<T>({
 
   const messageContent = normalizeMessageContent(response.choices[0]?.message?.content ?? "");
   if (!messageContent) {
-    throw new Error(`OpenRouter returned empty content for ${agentLabel}.`);
+    throw new Error(`OpenAI returned empty content for ${agentLabel}.`);
   }
 
   const normalizedText = stripCodeFences(messageContent);
@@ -143,21 +155,35 @@ async function requestJsonFromOpenRouter<T>({
 }
 
 
+function ensureAgentShape(raw: Partial<AgentResponse>, agent: string): AgentResponse {
+  return {
+    agent: raw.agent ?? agent,
+    recommendation: typeof raw.recommendation === "string" ? raw.recommendation : JSON.stringify(raw.recommendation ?? ""),
+    confidence_score: typeof raw.confidence_score === "number" ? raw.confidence_score : 0,
+    key_evidence: toArray(raw.key_evidence),
+    risks_identified: toArray(raw.risks_identified),
+    treatment_conflicts_flagged: toArray(raw.treatment_conflicts_flagged),
+    consensus_position: typeof raw.consensus_position === "string" ? raw.consensus_position : "",
+  };
+}
+
 async function invokeAgentSingle(agent: string, casePayload: PatientCasePayload, model: string): Promise<AgentResponse> {
-  if (!hasOpenrouterKey) {
-    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
+  if (!hasApiKey) {
+    throw new Error("OpenAI API key is missing. Set OPENAI_API_KEY in .env.local and restart the dev server.");
   }
 
   const system = AGENT_PROMPTS[agent] ?? `${agent}. ${EVIDENCE_GAP_SUFFIX}`;
   const prompt = `Return JSON only with keys: agent, recommendation, confidence_score, key_evidence, risks_identified, treatment_conflicts_flagged, consensus_position. Patient case:\n${buildCaseContext(casePayload)}`;
 
-  return await requestJsonFromOpenRouter<AgentResponse>({
+  const raw = await requestJsonFromOpenRouter<Partial<AgentResponse>>({
     model,
     systemPrompt: system,
     userContent: prompt,
-    maxTokens: 2000,
+    maxTokens: 2048,
     agentLabel: agent,
   });
+
+  return ensureAgentShape(raw, agent);
 }
 
 async function invokeAgentWithFallback(agent: string, casePayload: PatientCasePayload): Promise<AgentResponse> {
@@ -195,8 +221,8 @@ async function invokeModerator(
   responses: AgentResponse[],
   model: string,
 ): Promise<ConsensusReport> {
-  if (!hasOpenrouterKey) {
-    throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY in .env.local and restart the dev server.");
+  if (!hasApiKey) {
+    throw new Error("OpenAI API key is missing. Set OPENAI_API_KEY in .env.local and restart the dev server.");
   }
 
   const summarizedResponses = summarizeAgentResponses(responses);
@@ -215,7 +241,7 @@ export async function runDebate(casePayload: PatientCasePayload, onEvent?: (even
   const agents = resolveAgents(casePayload);
   onEvent?.({ type: "start", agents });
 
-  console.log("[OpenRouter] Model chain:", MODEL_CHAIN);
+  console.log("[OpenAI] Model chain:", MODEL_CHAIN);
 
   const total = agents.length;
   const STAGGER_MS = 2000;

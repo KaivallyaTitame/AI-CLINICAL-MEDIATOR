@@ -9,7 +9,26 @@ const styles = StyleSheet.create({
   line: { marginBottom: 3 },
 });
 
+function toStr(val: unknown): string {
+  if (typeof val === "string") return val;
+  if (val == null) return "";
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    return (obj.level ?? obj.name ?? obj.description ?? obj.option ?? obj.summary ?? JSON.stringify(val)) as string;
+  }
+  return String(val);
+}
+
+function toArray(val: unknown): string[] {
+  if (Array.isArray(val)) return val.map(toStr);
+  if (typeof val === "string" && val.length) return [val];
+  return [];
+}
+
 export function ConsensusPdf({ patientId, report }: { patientId: string; report: ConsensusReport }) {
+  const alerts = toArray(report.safety_alerts);
+  const steps = toArray(report.suggested_next_steps);
+
   return (
     <Document>
       <Page size="A4" style={styles.page}>
@@ -20,22 +39,26 @@ export function ConsensusPdf({ patientId, report }: { patientId: string; report:
         </View>
         <View style={styles.section}>
           <Text style={styles.heading}>Recommendation</Text>
-          <Text style={styles.line}>{report.consensus_recommendation}</Text>
+          <Text style={styles.line}>{toStr(report.consensus_recommendation)}</Text>
           <Text style={styles.line}>Confidence: {report.confidence_score}/100</Text>
-          <Text style={styles.line}>Evidence: {report.evidence_strength}</Text>
+          <Text style={styles.line}>Evidence: {toStr(report.evidence_strength)}</Text>
         </View>
-        <View style={styles.section}>
-          <Text style={styles.heading}>Safety Alerts</Text>
-          {report.safety_alerts.map((alert) => (
-            <Text key={alert} style={styles.line}>{alert}</Text>
-          ))}
-        </View>
-        <View style={styles.section}>
-          <Text style={styles.heading}>Next Steps</Text>
-          {report.suggested_next_steps.map((step) => (
-            <Text key={step} style={styles.line}>{step}</Text>
-          ))}
-        </View>
+        {alerts.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.heading}>Safety Alerts</Text>
+            {alerts.map((alert, i) => (
+              <Text key={i} style={styles.line}>{alert}</Text>
+            ))}
+          </View>
+        )}
+        {steps.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.heading}>Next Steps</Text>
+            {steps.map((step, i) => (
+              <Text key={i} style={styles.line}>{step}</Text>
+            ))}
+          </View>
+        )}
       </Page>
     </Document>
   );
